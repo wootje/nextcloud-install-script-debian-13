@@ -1,8 +1,8 @@
-#!/usr/bin/env bash
 set -euo pipefail
 
-#############################
-# Config – pas desgewenst aan
+##############################!/usr/bin/env bash
+
+# Config – you can use custom values
 #############################
 NC_WEBROOT="/var/www/nextcloud"
 NC_DATA="/var/nc-data"                 # buiten webroot
@@ -97,7 +97,7 @@ for INI in "$PHP_INI_FPM" "$PHP_INI_CLI"; do
   sed -i 's|^;*opcache.save_comments=.*|opcache.save_comments=1|' "$INI"
 done
 
-# APCu aan (CLI optioneel)
+# APCu on (CLI optioneel)
 echo "apc.enable_cli=1" > /etc/php/${PHP_VER}/mods-available/apcu.ini
 
 systemctl restart php${PHP_VER}-fpm
@@ -200,7 +200,7 @@ systemctl restart redis-server
 cat <<INFO
 
 ==========================================================
-Nextcloud installatie voltooid.
+Nextcloud install .
 
 URL:  http://${DOMAIN:-<server-ip>}/
 DB:   ${DB_NAME}
@@ -211,6 +211,6 @@ Redis password: ${REDIS_PASS}
 Admin user: 'ncadmin' (wachtwoord staat in Nextcloud config: ${NC_WEBROOT}/config/config.php)
 Data directory: ${NC_DATA}
 
-Als je een domein & e-mail had gezet (DOMAIN/EMAIL), is HTTPS via Let's Encrypt geconfigureerd.
+If you added a domain & e-mail, then a Let's Encrypt certificate will be created & HTTPS wil be available.
 ==========================================================
 INFO
