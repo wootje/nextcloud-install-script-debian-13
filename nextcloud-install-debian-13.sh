@@ -1,36 +1,35 @@
-#!/bin/bash
-#apt update && sudo apt install -y bash
+#!/bin/sh
+# POSIX /bin/sh script voor Debian 13 (Trixie) – Apache + PHP-FPM + MariaDB + Redis + APCu
+set -eu
 
-#set -euo pipefail
-set -e
-
-##############################!/usr/bin/env bash
-
-# Config – you can use custom values
-#############################
+###############################################################################
+# Config
+###############################################################################
 NC_WEBROOT="/var/www/nextcloud"
-NC_DATA="/var/nc-data"                 # buiten webroot
+NC_DATA="/var/nc-data"               # buiten webroot
 DB_NAME="nextcloud"
 DB_USER="nc_user"
+# simpele randoms zonder bashisms
 DB_PASS="$(openssl rand -base64 24 | tr -d '=+/')"
 REDIS_PASS="$(openssl rand -base64 24 | tr -d '=+/')"
-PHP_VER="8.4"                          # Debian 13 standaard
-DOMAIN="${DOMAIN:-}"                   # optioneel voor Let's Encrypt
-EMAIL="${EMAIL:-}"                     # optioneel voor Let's Encrypt
+PHP_VER="8.4"                         # Debian 13 standaard
+DOMAIN="${DOMAIN:-}"                  # optioneel (HTTPS via Let's Encrypt)
+EMAIL="${EMAIL:-}"                    # optioneel
 APT_OPTS="-y -o Dpkg::Options::=--force-confnew"
 
-#############################
+###############################################################################
 # Root check
-#############################
-if [[ "$(id -u)" -ne 0 ]]; then
-  echo "Run as root (sudo)."; exit 1
+###############################################################################
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Run dit script als root (sudo)." >&2
+  exit 1
 fi
 
-#############################
-# Systeem packages
-#############################
+###############################################################################
+# Pakketten
+###############################################################################
 apt update
-apt install $APT_OPTS ca-certificates lsb-release gnupg curl unzip tar \
+apt install $APT_OPTS ca-certificates lsb-release gnupg curl unzip tar openssl \
   apache2 libapache2-mod-fcgid \
   mariadb-server \
   redis-server \
@@ -41,12 +40,12 @@ apt install $APT_OPTS ca-certificates lsb-release gnupg curl unzip tar \
   imagemagick ffmpeg
 
 # Apache modules
-a2enmod proxy proxy_fcgi setenvif rewrite headers env dir mime ssl http2
-a2enconf php${PHP_VER}-fpm
+a2enmod proxy proxy_fcgi setenvif rewrite headers env dir mime ssl http2 >/dev/null
+a2enconf php${PHP_VER}-fpm >/dev/null || true
 
-#############################
+###############################################################################
 # MariaDB – database & user
-#############################
+###############################################################################
 systemctl enable --now mariadb
 mysql -u root <<SQL
 CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
@@ -55,24 +54,30 @@ GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
 FLUSH PRIVILEGES;
 SQL
 
-#############################
+###############################################################################
 # Redis hardenen
-#############################
-sed -i 's/^#* *supervised .*/supervised systemd/' /etc/redis/redis.conf
-if ! grep -q '^requirepass ' /etc/redis/redis.conf; then
-  echo "requirepass ${REDIS_PASS}" >> /etc/redis/redis.conf
+###############################################################################
+REDIS_CONF="/etc/redis/redis.conf"
+# supervised -> systemd
+if grep -q '^#\? *supervised ' "$REDIS_CONF"; then
+  sed -i 's/^#\? *supervised .*/supervised systemd/' "$REDIS_CONF"
 else
-  sed -i "s|^requirepass .*|requirepass ${REDIS_PASS}|" /etc/redis/redis.conf
+  printf "\n%s\n" "supervised systemd" >> "$REDIS_CONF"
+fi
+# requirepass zetten
+if grep -q '^requirepass ' "$REDIS_CONF"; then
+  sed -i "s|^requirepass .*|requirepass ${REDIS_PASS}|" "$REDIS_CONF"
+else
+  printf "%s\n" "requirepass ${REDIS_PASS}" >> "$REDIS_CONF"
 fi
 systemctl enable --now redis-server
 
-#############################
+###############################################################################
 # Nextcloud downloaden
-#############################
+###############################################################################
 mkdir -p "$NC_WEBROOT" "$NC_DATA"
 cd /tmp
 
-# Probeer latest.zip (kan soms niet beschikbaar zijn), anders val terug op 31.0.8
 NC_ZIP="nextcloud-latest.zip"
 if ! curl -fsSL -o "$NC_ZIP" "https://download.nextcloud.com/server/releases/latest.zip"; then
   echo "latest.zip niet beschikbaar, val terug op 31.0.8"
@@ -81,12 +86,13 @@ if ! curl -fsSL -o "$NC_ZIP" "https://download.nextcloud.com/server/releases/lat
 fi
 
 unzip -q "$NC_ZIP"
-rsync -a nextcloud/ "$NC_WEBROOT"/
+# kopieer zonder rsync (breder aanwezig)
+cp -a nextcloud/. "$NC_WEBROOT"/
 chown -R www-data:www-data "$NC_WEBROOT" "$NC_DATA"
 
-#############################
-# PHP tuning (FPM + CLI)
-#############################
+###############################################################################
+# PHP tuning
+###############################################################################
 PHP_INI_FPM="/etc/php/${PHP_VER}/fpm/php.ini"
 PHP_INI_CLI="/etc/php/${PHP_VER}/cli/php.ini"
 for INI in "$PHP_INI_FPM" "$PHP_INI_CLI"; do
@@ -100,21 +106,20 @@ for INI in "$PHP_INI_FPM" "$PHP_INI_CLI"; do
   sed -i 's|^;*opcache.memory_consumption=.*|opcache.memory_consumption=256|' "$INI"
   sed -i 's|^;*opcache.save_comments=.*|opcache.save_comments=1|' "$INI"
 done
-
-# APCu on (CLI optioneel)
+# APCu CLI
 echo "apc.enable_cli=1" > /etc/php/${PHP_VER}/mods-available/apcu.ini
-
 systemctl restart php${PHP_VER}-fpm
 
-#############################
+###############################################################################
 # Apache vhost
-#############################
-cat >/etc/apache2/sites-available/nextcloud.conf <<'APACHE'
+###############################################################################
+VHOST="/etc/apache2/sites-available/nextcloud.conf"
+cat >"$VHOST" <<APACHE
 <VirtualHost *:80>
-    ServerName _DEFAULT_
-    DocumentRoot /var/www/nextcloud
+    $( [ -n "$DOMAIN" ] && printf "ServerName %s\n" "$DOMAIN" || printf "%s\n" "# ServerName (vul domein in)" )
+    DocumentRoot ${NC_WEBROOT}
 
-    <Directory /var/www/nextcloud/>
+    <Directory ${NC_WEBROOT}/>
         Require all granted
         AllowOverride All
         Options FollowSymLinks MultiViews
@@ -123,73 +128,65 @@ cat >/etc/apache2/sites-available/nextcloud.conf <<'APACHE'
         </IfModule>
     </Directory>
 
-    ErrorLog ${APACHE_LOG_DIR}/nextcloud-error.log
-    CustomLog ${APACHE_LOG_DIR}/nextcloud-access.log combined
+    ErrorLog \${APACHE_LOG_DIR}/nextcloud-error.log
+    CustomLog \${APACHE_LOG_DIR}/nextcloud-access.log combined
 
-    # PHP-FPM via proxy_fcgi
-    <FilesMatch \.php$>
-        SetHandler "proxy:unix:/run/php/php8.4-fpm.sock|fcgi://localhost/"
+    <FilesMatch \\.php$>
+        SetHandler "proxy:unix:/run/php/php${PHP_VER}-fpm.sock|fcgi://localhost/"
     </FilesMatch>
 </VirtualHost>
 APACHE
 
-# ServerName invullen (of placeholder laten)
-if [[ -n "${DOMAIN}" ]]; then
-  sed -i "s/ServerName _DEFAULT_/ServerName ${DOMAIN}/" /etc/apache2/sites-available/nextcloud.conf
-else
-  sed -i "s/ServerName _DEFAULT_/# ServerName (vul domein in)/" /etc/apache2/sites-available/nextcloud.conf
-fi
-
 a2dissite 000-default >/dev/null 2>&1 || true
-a2ensite nextcloud
+a2ensite nextcloud >/dev/null
 systemctl reload apache2
 
-#############################
+###############################################################################
 # Nextcloud eerste config (occ)
-#############################
-# Wacht tot FPM/socket klaar is
+###############################################################################
+# kleine pauze zodat FPM/socket klaar is
 sleep 2
 
-# Initial install via occ (command line installer)
-sudo -u www-data php${PHP_VER} "${NC_WEBROOT}/occ" maintenance:install \
+ADMIN_PASS="$(openssl rand -base64 16 | tr -d '=+/')"
+OCC="runuser -u www-data -- php${PHP_VER} ${NC_WEBROOT}/occ"
+
+# Install
+runuser -u www-data -- php${PHP_VER} "${NC_WEBROOT}/occ" maintenance:install \
   --database "mysql" --database-name "${DB_NAME}" \
   --database-user "${DB_USER}" --database-pass "${DB_PASS}" \
-  --admin-user "ncadmin" --admin-pass "$(openssl rand -base64 16)" \
+  --admin-user "ncadmin" --admin-pass "${ADMIN_PASS}" \
   --data-dir "${NC_DATA}"
 
-# Betere defaults: pretty URLs, caching, Redis, background jobs
-NC_CONF="${NC_WEBROOT}/config/config.php"
-sudo -u www-data php${PHP_VER} -r "
-\$f='$NC_CONF';
-\$cfg = include(\$f);
-\$cfg['overwrite.cli.url'] = 'http://${DOMAIN:-localhost}';
-\$cfg['htaccess.RewriteBase'] = '/';
-\$cfg['memcache.local'] = '\\\\OC\\\\Memcache\\\\APCu';
-\$cfg['memcache.locking'] = '\\\\OC\\\\Memcache\\\\Redis';
-\$cfg['redis'] = ['host' => '127.0.0.1', 'port' => 6379, 'password' => '${REDIS_PASS}', 'timeout' => 1.5];
-file_put_contents(\$f, \"<?php\\n\\nreturn \".var_export(\$cfg, true).\";\\n\");
-"
-sudo -u www-data php${PHP_VER} "${NC_WEBROOT}/occ" maintenance:update:htaccess
-sudo -u www-data php${PHP_VER} "${NC_WEBROOT}/occ" background:cron
+# Aanbevolen settings via occ (geen PHP -r nodig)
+$OCC config:system:set overwrite.cli.url --value "http://${DOMAIN:-localhost}"
+$OCC config:system:set htaccess.RewriteBase --value "/"
+$OCC config:system:set memcache.local --value "\\OC\\Memcache\\APCu"
+$OCC config:system:set memcache.locking --value "\\OC\\Memcache\\Redis"
+$OCC config:system:set redis host --value "127.0.0.1"
+$OCC config:system:set redis port --value "6379" --type integer
+$OCC config:system:set redis password --value "${REDIS_PASS}"
+$OCC config:system:set redis timeout --value "1.5" --type float
+$OCC maintenance:update:htaccess
+$OCC background:cron
 
-# Cron every 5 minutes for www-data
-if ! crontab -u www-data -l >/dev/null 2>&1; then
-  echo "no crontab for www-data yet"
+# Cron elke 5 minuten voor www-data
+if crontab -u www-data -l >/dev/null 2>&1; then
+  ( crontab -u www-data -l; echo "*/5 * * * * php -f ${NC_WEBROOT}/cron.php" ) | crontab -u www-data -
+else
+  echo "*/5 * * * * php -f ${NC_WEBROOT}/cron.php" | crontab -u www-data -
 fi
-( crontab -u www-data -l 2>/dev/null || true; echo "*/5 * * * * php -f ${NC_WEBROOT}/cron.php" ) | crontab -u www-data -
 
-#############################
-# Let’s Encrypt (optioneel)
-#############################
-if [[ -n "${DOMAIN}" && -n "${EMAIL}" ]]; then
+###############################################################################
+# Let's Encrypt (optioneel)
+###############################################################################
+if [ -n "$DOMAIN" ] && [ -n "$EMAIL" ]; then
   apt install $APT_OPTS certbot python3-certbot-apache
-  certbot --apache -d "${DOMAIN}" -m "${EMAIL}" --agree-tos --non-interactive --redirect
-  # HTTP/2 al actief; OCSP stap overslaan
+  certbot --apache -d "$DOMAIN" -m "$EMAIL" --agree-tos --non-interactive --redirect || true
 fi
 
-#############################
-# Permissions & restart
-#############################
+###############################################################################
+# Rechten en services
+###############################################################################
 find "$NC_WEBROOT" -type d -exec chmod 750 {} \;
 find "$NC_WEBROOT" -type f -exec chmod 640 {} \;
 chown -R www-data:www-data "$NC_WEBROOT" "$NC_DATA"
@@ -198,28 +195,27 @@ systemctl restart apache2
 systemctl restart php${PHP_VER}-fpm
 systemctl restart redis-server
 
-#############################
+###############################################################################
 # Output
-#############################
+###############################################################################
 cat <<INFO
 
 ==========================================================
-Nextcloud install .
+Nextcloud installatie voltooid.
 
 URL:  http://${DOMAIN:-<server-ip>}/
-DB:   ${DB_NAME}
-User: ${DB_USER}
-Pass: ${DB_PASS}
+DB:
+  name: ${DB_NAME}
+  user: ${DB_USER}
+  pass: ${DB_PASS}
 
 Redis password: ${REDIS_PASS}
-Admin user: 'ncadmin' (wachtwoord staat in Nextcloud config: ${NC_WEBROOT}/config/config.php)
-Data directory: ${NC_DATA}
 
-If you added a domain & e-mail, then a Let's Encrypt certificate will be created & HTTPS wil be available.
+Nextcloud admin:
+  user: ncadmin
+  pass: ${ADMIN_PASS}
+
+Data directory: ${NC_DATA}
+(HTTPS via Let's Encrypt geconfigureerd als DOMAIN/EMAIL waren gezet.)
 ==========================================================
 INFO
-
-
-
-
-
