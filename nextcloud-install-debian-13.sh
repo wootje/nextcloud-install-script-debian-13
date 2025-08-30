@@ -1,4 +1,4 @@
-set -euo pipefail
+#set -euo pipefail
 
 ##############################!/usr/bin/env bash
 
@@ -214,3 +214,4 @@ Data directory: ${NC_DATA}
 If you added a domain & e-mail, then a Let's Encrypt certificate will be created & HTTPS wil be available.
 ==========================================================
 INFO
+
