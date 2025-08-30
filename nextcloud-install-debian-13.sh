@@ -1,7 +1,8 @@
 #!/bin/bash
-apt update && sudo apt install -y bash
+#apt update && sudo apt install -y bash
 
 set -euo pipefail
+#set -e
 
 ##############################!/usr/bin/env bash
 
@@ -217,6 +218,7 @@ Data directory: ${NC_DATA}
 If you added a domain & e-mail, then a Let's Encrypt certificate will be created & HTTPS wil be available.
 ==========================================================
 INFO
+
 
 
 
